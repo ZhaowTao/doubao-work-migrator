@@ -1,7 +1,7 @@
 // 刷新对话索引：项目列表 + 最近 50 + 归档，合并进 conv_index.json（增量同步第一步）
 const CDP_HTTP = 'http://127.0.0.1:9222';
 const fs = require('fs');
-const OUT = '/tmp/mda/doubao_export';
+const OUT = process.env.DOUBAO_WORK_DIR ? process.env.DOUBAO_WORK_DIR + '/export' : require('os').homedir() + '/.doubao-migrator/export';
 let ws = null; let msgId = 0; const pending = new Map();
 const httpGet = (path, method) => new Promise((res, rej) => {
   require('http').request(CDP_HTTP + path, { method: method || 'GET' }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => { try { res(JSON.parse(d)); } catch (e) { res({ __raw: d.slice(0, 80) }); } }); }).on('error', rej).end();
@@ -69,14 +69,14 @@ function cdp(method, params = {}) {
   const uniq = new Map(oldIndex.map(c => [c.id, c]));
   let added = 0;
   for (const p of projects) for (const c of (p.conversations || [])) {
-    if (!uniq.has(c.conversation_id)) { uniq.set(c.conversation_id, { id: c.conversation_id, name: c.conversation_name, project: p.name }); added++; }
+    if (!uniq.has(c.conversation_id)) { uniq.set(c.conversation_id, { id: c.conversation_id, name: c.conversation_name, project: p.name, update_time: String(c.update_time || '') }); added++; } else if (c.update_time) { uniq.get(c.conversation_id).update_time = String(c.update_time); }
   }
   for (const cell of [...recent, ...archived]) {
     const c = cell.conversation;
     if (c && !uniq.has(c.conversation_id)) {
       const inProj = projects.some(p => (p.conversations || []).some(x => x.conversation_id === c.conversation_id));
-      if (!inProj) { uniq.set(c.conversation_id, { id: c.conversation_id, name: c.conversation_name || '', project: archived.includes(cell) ? '(已归档)' : '(未分组)' }); added++; }
-    }
+      if (!inProj) { uniq.set(c.conversation_id, { id: c.conversation_id, name: c.conversation_name || '', project: archived.includes(cell) ? '(已归档)' : '(未分组)', update_time: String(c.update_time || '') }); added++; }
+    } else if (c && c.update_time) { uniq.get(c.conversation_id).update_time = String(c.update_time); }
   }
   fs.writeFileSync(OUT + '/conv_index.json', JSON.stringify([...uniq.values()], null, 1));
   console.log('项目', projects.length, '| 索引总数', uniq.size, '| 新增', added);

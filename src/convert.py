@@ -14,20 +14,40 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 from datetime import datetime
 
-SRC = '/tmp/mda/doubao_export'
+SRC = os.path.join(os.environ.get('DOUBAO_WORK_DIR', os.path.expanduser('~/.doubao-migrator')), 'export')
 WB_IMPORT = os.path.expanduser('~/WorkBuddy/豆包Work导入')
 WB_PROJ_DIR = os.path.join(WB_IMPORT, 'projects')
-WB_MEM = os.path.expanduser('~/.workbuddy/memory/doubao-import_20261019_memory.md')
+# 稳定文件名：每次覆盖写，避免按日期堆出多份重复记忆
+WB_MEM = os.path.expanduser('~/.workbuddy/memory/doubao-import_memory.md')
 HERMES_MEM = os.path.expanduser('~/.hermes/memories/MEMORY.md')
-STAMP = '2026-10-19'
+STAMP = datetime.now().strftime('%Y-%m-%d')
+HERMES_MARKER = '【豆包Work 记忆同步】'
 
 
 def load(name):
     with open(os.path.join(SRC, name), encoding='utf-8') as f:
         return json.load(f)
+
+
+def near_dup_pairs(memories, threshold=0.72):
+    """找出语义近似重复的记忆（豆包自身不做去重，会累积同义条目）。"""
+    import difflib
+
+    def norm(s):
+        return re.sub(r'[\s，。、；：""\'\'（）()\-—、]+', '', s or '')
+
+    pairs = []
+    texts = [(i, norm(m.get('content', ''))) for i, m in enumerate(memories)]
+    for a in range(len(texts)):
+        for b in range(a + 1, len(texts)):
+            r = difflib.SequenceMatcher(None, texts[a][1], texts[b][1]).ratio()
+            if r >= threshold:
+                pairs.append((a, b, round(r, 2)))
+    return pairs
 
 
 def parse_content(raw):
@@ -44,6 +64,34 @@ def parse_content(raw):
     text = d.get('text')
     if isinstance(text, str) and text.strip():
         parts.append(text.strip())
+    # content_type=20 的图片/文件消息：正文在 entities 里，只取 text 会把整条消息丢掉
+    ents = d.get('entities')
+    if isinstance(ents, list):
+        for e in ents:
+            if not isinstance(e, dict):
+                continue
+            ec = e.get('entity_content')
+            if not isinstance(ec, dict):
+                continue
+            img = ec.get('image')
+            if isinstance(img, dict):
+                ori = img.get('image_ori') or {}
+                url = ori.get('url') or ''
+                key = img.get('key') or ''
+                if url or key:
+                    parts.append('![图片](%s)' % (url or key))
+                continue
+            fl = ec.get('file')
+            if isinstance(fl, dict):
+                nm = fl.get('file_name') or fl.get('name') or '文件'
+                url = fl.get('url') or (fl.get('file_ori') or {}).get('url') or ''
+                parts.append('[文件：%s](%s)' % (nm, url) if url else '[文件：%s]' % nm)
+                continue
+            for k in ('text', 'content', 'name', 'title'):
+                v = ec.get(k)
+                if isinstance(v, str) and v.strip():
+                    parts.append(v.strip())
+                    break
     for key in ('multi_reference', 'search_references'):
         ref = d.get(key)
         if isinstance(ref, dict):
@@ -120,6 +168,14 @@ def main():
 
     os.makedirs(WB_PROJ_DIR, exist_ok=True)
 
+    # 供覆盖度说明使用的统计
+    proj_ids = {c['conversation_id'] for p in projects for c in (p.get('conversations') or [])}
+    ungrouped_ids = [cid for cid in all_msgs if cid not in proj_ids]
+    media_count = sum(
+        1 for v in all_msgs.values() for m in v.get('messages', [])
+        if '"entities"' in str(m.get('content', ''))
+    )
+
     # ---------- 1. 总览 ----------
     total_msgs = sum(len(v.get('messages', [])) for v in all_msgs.values())
     overview = []
@@ -146,6 +202,13 @@ def main():
     for i, m in enumerate(memories, 1):
         overview.append('%d. （%s）%s' % (i, m.get('date', ''), m.get('content', '')))
     overview.append('')
+    dups = near_dup_pairs(memories)
+    if dups:
+        overview.append('### 可能重复的记忆（豆包不做去重，建议在面板里手动合并）')
+        overview.append('')
+        for a, b, r in dups:
+            overview.append('- 相似度 %s：第 %d 条 ≈ 第 %d 条' % (r, a + 1, b + 1))
+        overview.append('')
 
     # 覆盖度与技能清单
     try:
@@ -153,13 +216,14 @@ def main():
     except Exception:
         skills = []
     archived = [cid for cid, v in all_msgs.items() if v.get('project') == '(已归档)']
-    overview.append('## 覆盖度说明（2026-10-19 审计）')
+    overview.append('## 覆盖度说明（%s 同步）' % STAMP)
     overview.append('')
     overview.append('- 项目内对话：%d 个（项目列表权威全量）' % sum(len(p.get('conversations') or []) for p in projects))
-    overview.append('- 侧边栏可见对话：47 个，全部覆盖')
-    overview.append('- 已归档对话：%d 个（见 projects/_已归档.md）' % len(archived))
+    overview.append('- 未分组/已归档对话：%d 个（见 projects/_未分组.md、_已归档.md）' % len(ungrouped_ids))
+    overview.append('- 已归档对话：%d 个' % len(archived))
     overview.append('- 豆包Work 可用技能：%d 个（清单见下）' % len(skills))
-    overview.append('- 未覆盖：云盘文件（豆包云盘无本地缓存、导出接口未开放）；仅存在于其他设备的老对话（recent_conv 接口翻页游标失效，无法触及）')
+    overview.append('- 消息内图片/文件：%d 条（以 Markdown 图片/链接形式嵌入转录）' % media_count)
+    overview.append('- 未覆盖：云盘文件（无导出接口）；仅存在于其他设备的对话（recent_conv 翻页游标失效）；伙伴(bot)独立记忆（仅主账号）')
     overview.append('')
     if skills:
         overview.append('## 豆包Work 技能清单（%d 个）' % len(skills))
@@ -223,28 +287,44 @@ def main():
     mem_lines = ['# 豆包Work 导入记忆（%s）' % STAMP, '']
     mem_lines.append('以下 %d 条记忆导入自豆包Work（DoubaoWork）的个人记忆，按日期排列：' % len(memories))
     mem_lines.append('')
+    by_date = {}
     for m in sorted(memories, key=lambda x: x.get('date', ''), reverse=True):
-        mem_lines.append('## %s' % m.get('date', ''))
+        by_date.setdefault(m.get('date', ''), []).append(m.get('content', ''))
+    for dt, items in by_date.items():
+        mem_lines.append('## %s' % (dt or '（无日期）'))
         mem_lines.append('')
-        mem_lines.append(m.get('content', ''))
+        for c in items:
+            mem_lines.append('- %s' % c.replace('\n', ' ').strip())
         mem_lines.append('')
     with open(WB_MEM, 'w', encoding='utf-8') as f:
         f.write('\n'.join(mem_lines))
+    # 旧版按日期命名的记忆文件归档，避免多份近似记忆被同时注入上下文
+    wb_mem_dir = os.path.dirname(WB_MEM)
+    for old in os.listdir(wb_mem_dir):
+        if re.match(r'^doubao-import_\d{8}_memory\.md$', old):
+            arc = os.path.join(wb_mem_dir, '_archive')
+            os.makedirs(arc, exist_ok=True)
+            shutil.move(os.path.join(wb_mem_dir, old), os.path.join(arc, old))
 
-    # ---------- 4. Hermes MEMORY.md 追加 ----------
+    # ---------- 4. Hermes MEMORY.md 同步段（稳定标记，每次替换） ----------
     h_lines = ['', '§', '']
-    h_lines.append('【豆包Work 导入 %s】以下记忆导入自豆包Work 个人记忆面板，与上方内容冲突时以最新日期为准：' % STAMP)
+    h_lines.append('%s 最近同步 %s，共 %d 条。以下记忆同步自豆包Work 个人记忆，与上方内容冲突时以最新日期为准：' % (HERMES_MARKER, STAMP, len(memories)))
     h_lines.append('')
     for m in sorted(memories, key=lambda x: x.get('date', ''), reverse=True):
         h_lines.append('- （%s）%s' % (m.get('date', ''), m.get('content', '')))
     existing = open(HERMES_MEM, encoding='utf-8').read() if os.path.exists(HERMES_MEM) else ''
-    marker = '【豆包Work 导入 %s】' % STAMP
-    if marker in existing:
-        # 替换旧段（幂等）：截到标记前再写
-        idx = existing.find(marker)
+    if HERMES_MARKER in existing:
+        # 替换旧段（幂等）：截到标记所在 § 之前
+        idx = existing.find(HERMES_MARKER)
         cut = existing.rfind('§', 0, idx)
         existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
-        open(HERMES_MEM, 'w', encoding='utf-8').write(existing)
+    # 兼容旧的按日期标记（2026-10-19 版）
+    old_marker = '【豆包Work 导入 '
+    if old_marker in existing:
+        idx = existing.find(old_marker)
+        cut = existing.rfind('§', 0, idx)
+        existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
+    open(HERMES_MEM, 'w', encoding='utf-8').write(existing)
     with open(HERMES_MEM, 'a', encoding='utf-8') as f:
         f.write('\n'.join(h_lines))
 

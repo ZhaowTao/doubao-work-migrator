@@ -1,0 +1,7 @@
+# 中间产物与个人数据，绝不入库
+export/
+logs/
+*.jsonl
+config.json
+node_modules/
+.DS_Store

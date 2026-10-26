@@ -1,7 +1,7 @@
 // 全量消息提取 v4：逐页拉取（小 payload）+ 断线重连
 const CDP_HTTP = 'http://127.0.0.1:9222';
 const fs = require('fs');
-const OUT = '/tmp/mda/doubao_export';
+const OUT = process.env.DOUBAO_WORK_DIR ? process.env.DOUBAO_WORK_DIR + '/export' : require('os').homedir() + '/.doubao-migrator/export';
 
 let ws = null;
 let msgId = 0;
@@ -120,8 +120,16 @@ async function evalJS(expr, retry = 2) {
   if (fs.existsSync(OUT + '/all_messages.json')) {
     try { allData = JSON.parse(fs.readFileSync(OUT + '/all_messages.json', 'utf8')); } catch (_) {}
   }
-  const todo = list.filter(c => !allData[c.id] || !(allData[c.id].messages || []).length);
-  console.log('待提取:', todo.length, '（已有', Object.keys(allData).length, '）');
+  // 真增量：未提过、没消息、或云端 update_time 比本地记录新（对话被追加了消息）
+  const todo = list.filter((c) => {
+    const local = allData[c.id];
+    if (!local || !(local.messages || []).length) return true;
+    const remote = String(c.update_time || '');
+    const seen = String(local.update_time || '');
+    return remote && (!seen || Number(remote) > Number(seen));
+  });
+  const refreshed = todo.filter((c) => allData[c.id]).length;
+  console.log('待提取:', todo.length, '（其中已有对话需补新消息:', refreshed, '| 本地已有:', Object.keys(allData).length, '）');
 
   let done = 0, errs = 0;
   for (const c of todo) {
@@ -140,7 +148,16 @@ async function evalJS(expr, retry = 2) {
         anchor = (r.minIdx === null ? 0 : r.minIdx) - 1;
         if (anchor < 0) break;
       }
-      allData[c.id] = { name: c.name, project: c.project, messages: msgs };
+      // 合并式写入：已有对话补新消息时按 message_id 去重，不丢历史
+      const prevMsgs = (allData[c.id] && allData[c.id].messages) || [];
+      const byId = new Map();
+      for (const m of prevMsgs) byId.set(m.message_id, m);
+      for (const m of msgs) byId.set(m.message_id, m);
+      const merged = [...byId.values()].sort((a, b) => {
+        const ai = Number(a.index_in_conv || 0), bi = Number(b.index_in_conv || 0);
+        return ai - bi;
+      });
+      allData[c.id] = { name: c.name, project: c.project, update_time: String(c.update_time || ''), messages: merged };
     } catch (e) {
       errs++;
       if (errs <= 5) console.log('  ERR', (c.name || '').slice(0, 20), String(e.message || e).slice(0, 80));

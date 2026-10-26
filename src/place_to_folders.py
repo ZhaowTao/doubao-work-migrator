@@ -12,9 +12,11 @@ import re
 import shutil
 from datetime import datetime
 
-SRC = '/tmp/mda/doubao_export'
+SRC = os.path.join(os.environ.get('DOUBAO_WORK_DIR', os.path.expanduser('~/.doubao-migrator')), 'export')
 CENTRAL = os.path.expanduser('~/WorkBuddy/豆包Work导入')
-STAMP = '2026-10-19'
+# 稳定文件名：项目内的摘要记忆每次覆盖，不按日期堆积
+STAMP = datetime.now().strftime('%Y-%m-%d')
+PROJ_MEM_NAME = 'doubao-work-sync_memory.md'
 
 
 def fmt_time(ts):
@@ -58,7 +60,7 @@ def main():
         digest = [
             '# 豆包Work 项目导入：%s（%s）' % (label, STAMP),
             '',
-            '本文件由豆包Work 资产迁移自动生成（2026-10-19，DoubaoWork v2.32）。',
+            '本文件由豆包Work 资产迁移自动生成（最近同步：%s，DoubaoWork v2.32）。' % STAMP,
             '完整对话全录见同目录《豆包Work资产全录_%s.md》。' % label,
             '',
             '- 豆包项目 ID：%s' % p.get('project_id', ''),
@@ -75,9 +77,15 @@ def main():
         digest.append('')
         mem_dir = os.path.join(folder, '.workbuddy', 'memory')
         os.makedirs(mem_dir, exist_ok=True)
-        digest_path = os.path.join(mem_dir, 'doubao-import_%s_memory.md' % STAMP.replace('-', ''))
+        digest_path = os.path.join(mem_dir, PROJ_MEM_NAME)
         with open(digest_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(digest))
+        # 旧版按日期命名的摘要归档，避免同一项目里堆多份重复记忆
+        for old in os.listdir(mem_dir):
+            if re.match(r'^doubao-import_\d{8}_memory\.md$', old):
+                arc = os.path.join(mem_dir, '_archive')
+                os.makedirs(arc, exist_ok=True)
+                shutil.move(os.path.join(mem_dir, old), os.path.join(arc, old))
 
         # 2) 完整全录（从中央归档复制）
         src_file = os.path.join(CENTRAL, 'projects', safe + '.md')
