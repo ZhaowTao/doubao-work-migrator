@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""把豆包Work 的 10 个项目资产对应放置到各自的本地项目文件夹。
+"""把豆包Work 的项目资产对应放置到各自的本地项目文件夹。
 
 每个有目录的项目：
-  <folder>/.workbuddy/memory/doubao-import_20261019.md   摘要（对话索引，可入上下文）
-  <folder>/豆包Work资产全录_<项目名>.md                    完整转录（约 MB 级，不自动加载）
-无目录的项目保留在中央归档 ~/WorkBuddy/豆包Work导入/projects/。
+  <folder>/.workbuddy/memory/doubao-work-sync_memory.md  摘要（对话索引，可入上下文）
+  <folder>/豆包Work资产全录_<项目名>.md                   完整转录（约 MB 级，不自动加载）
+无目录的项目只保留在中央归档 $DOUBAO_OUT_DIR/projects/（默认 ~/WorkBuddy/豆包Work导入）。
 """
 import json
 import os
@@ -12,8 +12,14 @@ import re
 import shutil
 from datetime import datetime
 
-SRC = os.path.join(os.environ.get('DOUBAO_WORK_DIR', os.path.expanduser('~/.doubao-migrator')), 'export')
-CENTRAL = os.path.expanduser('~/WorkBuddy/豆包Work导入')
+
+def _env_path(name, default):
+    """环境变量优先，值里的 ~ 展开，方便跨机器配置。空字符串视为未设置。"""
+    return os.path.expanduser(os.environ.get(name) or default)
+
+
+SRC = os.path.join(_env_path('DOUBAO_WORK_DIR', '~/.doubao-migrator'), 'export')
+CENTRAL = _env_path('DOUBAO_OUT_DIR', '~/WorkBuddy/豆包Work导入')
 # 稳定文件名：项目内的摘要记忆每次覆盖，不按日期堆积
 STAMP = datetime.now().strftime('%Y-%m-%d')
 PROJ_MEM_NAME = 'doubao-work-sync_memory.md'

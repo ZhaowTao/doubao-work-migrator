@@ -3,5 +3,13 @@ export/
 logs/
 *.jsonl
 config.json
+*.log
+.env
+.env.*
+
+# 运行时缓存
+__pycache__/
+*.pyc
 node_modules/
+
 .DS_Store

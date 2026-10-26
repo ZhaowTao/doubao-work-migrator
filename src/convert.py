@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""把豆包Work导出的资产转换为 WorkBuddy + Hermes 可用的格式。
+"""把豆包Work导出的资产转换为 Markdown 归档，并可选同步到 WorkBuddy / Hermes 记忆。
 
-输入（/tmp/mda/doubao_export/）：
-  memories.json      9 条豆包记忆
-  projects_full.json 10 个项目（含 folders/conversations）
+输入（默认 ~/.doubao-migrator/export/，由 DOUBAO_WORK_DIR 决定）：
+  memories.json      豆包个人记忆
+  projects_full.json 项目（含 folders/conversations）
   all_messages.json  全部对话消息
 
 输出：
-  ~/WorkBuddy/豆包Work导入/                     总览 + 分项目转录
-  ~/.workbuddy/memory/doubao-import_20261019_memory.md   WorkBuddy 经验记忆
-  ~/.hermes/memories/MEMORY.md                  Hermes 记忆（追加）
+  $DOUBAO_OUT_DIR/                                总览 + 分项目转录，默认 ~/WorkBuddy/豆包Work导入/
+  $WORKBUDDY_MEM_FILE                             默认 ~/.workbuddy/memory/doubao-import_memory.md
+  $HERMES_MEM_FILE                                默认 ~/.hermes/memories/MEMORY.md
+
+后两个目标工具没装时（父目录不存在）自动跳过，不会硬造目录。
 """
 import json
 import os
@@ -18,14 +20,31 @@ import shutil
 import subprocess
 from datetime import datetime
 
-SRC = os.path.join(os.environ.get('DOUBAO_WORK_DIR', os.path.expanduser('~/.doubao-migrator')), 'export')
-WB_IMPORT = os.path.expanduser('~/WorkBuddy/豆包Work导入')
+
+def _env_path(name, default):
+    """环境变量优先，值里的 ~ 展开，方便跨机器配置。空字符串视为未设置。"""
+    return os.path.expanduser(os.environ.get(name) or default)
+
+
+SRC = os.path.join(_env_path('DOUBAO_WORK_DIR', '~/.doubao-migrator'), 'export')
+WB_IMPORT = _env_path('DOUBAO_OUT_DIR', '~/WorkBuddy/豆包Work导入')
 WB_PROJ_DIR = os.path.join(WB_IMPORT, 'projects')
 # 稳定文件名：每次覆盖写，避免按日期堆出多份重复记忆
-WB_MEM = os.path.expanduser('~/.workbuddy/memory/doubao-import_memory.md')
-HERMES_MEM = os.path.expanduser('~/.hermes/memories/MEMORY.md')
+WB_MEM = _env_path('WORKBUDDY_MEM_FILE', '~/.workbuddy/memory/doubao-import_memory.md')
+HERMES_MEM = _env_path('HERMES_MEM_FILE', '~/.hermes/memories/MEMORY.md')
 STAMP = datetime.now().strftime('%Y-%m-%d')
 HERMES_MARKER = '【豆包Work 记忆同步】'
+
+
+def write_target(path, content, label):
+    """写目标工具的记忆文件。父目录不存在说明工具没装，跳过而不是造目录。"""
+    parent = os.path.dirname(path)
+    if not parent or not os.path.isdir(parent):
+        print('  跳过 %s：目录不存在 %s' % (label, parent or path))
+        return False
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    return True
 
 
 def load(name):
@@ -296,15 +315,15 @@ def main():
         for c in items:
             mem_lines.append('- %s' % c.replace('\n', ' ').strip())
         mem_lines.append('')
-    with open(WB_MEM, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(mem_lines))
-    # 旧版按日期命名的记忆文件归档，避免多份近似记忆被同时注入上下文
     wb_mem_dir = os.path.dirname(WB_MEM)
-    for old in os.listdir(wb_mem_dir):
-        if re.match(r'^doubao-import_\d{8}_memory\.md$', old):
-            arc = os.path.join(wb_mem_dir, '_archive')
-            os.makedirs(arc, exist_ok=True)
-            shutil.move(os.path.join(wb_mem_dir, old), os.path.join(arc, old))
+    wb_written = write_target(WB_MEM, '\n'.join(mem_lines), 'WorkBuddy 记忆')
+    if wb_written:
+        # 旧版按日期命名的记忆文件归档，避免多份近似记忆被同时注入上下文
+        for old in os.listdir(wb_mem_dir):
+            if re.match(r'^doubao-import_\d{8}_memory\.md$', old):
+                arc = os.path.join(wb_mem_dir, '_archive')
+                os.makedirs(arc, exist_ok=True)
+                shutil.move(os.path.join(wb_mem_dir, old), os.path.join(arc, old))
 
     # ---------- 4. Hermes MEMORY.md 同步段（稳定标记，每次替换） ----------
     h_lines = ['', '§', '']
@@ -312,29 +331,36 @@ def main():
     h_lines.append('')
     for m in sorted(memories, key=lambda x: x.get('date', ''), reverse=True):
         h_lines.append('- （%s）%s' % (m.get('date', ''), m.get('content', '')))
-    existing = open(HERMES_MEM, encoding='utf-8').read() if os.path.exists(HERMES_MEM) else ''
-    if HERMES_MARKER in existing:
-        # 替换旧段（幂等）：截到标记所在 § 之前
-        idx = existing.find(HERMES_MARKER)
-        cut = existing.rfind('§', 0, idx)
-        existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
-    # 兼容旧的按日期标记（2026-10-19 版）
-    old_marker = '【豆包Work 导入 '
-    if old_marker in existing:
-        idx = existing.find(old_marker)
-        cut = existing.rfind('§', 0, idx)
-        existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
-    open(HERMES_MEM, 'w', encoding='utf-8').write(existing)
-    with open(HERMES_MEM, 'a', encoding='utf-8') as f:
-        f.write('\n'.join(h_lines))
+    hermes_parent = os.path.dirname(HERMES_MEM)
+    hermes_written = False
+    if not hermes_parent or not os.path.isdir(hermes_parent):
+        print('  跳过 Hermes 记忆：目录不存在 %s' % (hermes_parent or HERMES_MEM))
+    else:
+        existing = open(HERMES_MEM, encoding='utf-8').read() if os.path.exists(HERMES_MEM) else ''
+        if HERMES_MARKER in existing:
+            # 替换旧段（幂等）：截到标记所在 § 之前
+            idx = existing.find(HERMES_MARKER)
+            cut = existing.rfind('§', 0, idx)
+            existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
+        # 兼容旧的按日期标记（2026-10-19 版）
+        old_marker = '【豆包Work 导入 '
+        if old_marker in existing:
+            idx = existing.find(old_marker)
+            cut = existing.rfind('§', 0, idx)
+            existing = (existing[:cut].rstrip() + '\n') if cut != -1 else existing[:idx]
+        with open(HERMES_MEM, 'w', encoding='utf-8') as f:
+            f.write(existing)
+        with open(HERMES_MEM, 'a', encoding='utf-8') as f:
+            f.write('\n'.join(h_lines))
+        hermes_written = True
 
     # ---------- 5. 报告 ----------
     print('转换完成：')
     print('  总览:', os.path.join(WB_IMPORT, '豆包Work资产导入_总览.md'))
     print('  项目转录文件:', len(os.listdir(WB_PROJ_DIR)), '个 ->', WB_PROJ_DIR)
     print('  未分组对话:', len(ungrouped), '个')
-    print('  WorkBuddy 记忆文件:', WB_MEM)
-    print('  Hermes MEMORY.md 已追加 %d 条' % len(memories))
+    print('  WorkBuddy 记忆:', WB_MEM if wb_written else '已跳过（目标目录不存在）')
+    print('  Hermes 记忆:', ('已追加 %d 条 -> %s' % (len(memories), HERMES_MEM)) if hermes_written else '已跳过（目标目录不存在）')
     print('  消息统计: 用户 %d / 豆包 %d / 共 %d 条' % (grand[0], grand[1], grand[3]))
 
 

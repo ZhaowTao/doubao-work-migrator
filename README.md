@@ -21,6 +21,8 @@
 
 ## 工作原理
 
+下图里的路径都是默认值，括号内是可用环境变量覆盖的项。
+
 ```
 豆包Work 桌面客户端（已登录）
    │  ① 精确 pkill + 清 SingletonLock + --remote-debugging-port=9222 重启
@@ -33,26 +35,57 @@
    ├── /chat/memory/list       个人记忆（POST {bot_id}）
    └── /samantha/skill/list    技能清单（POST）
    ▼
-~/.doubao-migrator/export/   中间产物（JSON，可断点续提）
+~/.doubao-migrator/export/   中间产物（JSON，可断点续提，DOUBAO_WORK_DIR）
    ▼
 转换器
-   ├── ~/.workbuddy/memory/doubao-import_memory.md      WorkBuddy 经验记忆（稳定文件名，每次覆盖）
+   ├── ~/.workbuddy/memory/doubao-import_memory.md      WorkBuddy 经验记忆（WORKBUDDY_MEM_FILE）
    ├── <项目目录>/.workbuddy/memory/doubao-work-sync_memory.md   项目摘要（自动注入）
    ├── <项目目录>/豆包Work资产全录_<项目>.md                      完整转录
-   └── ~/.hermes/memories/MEMORY.md                     Hermes 常驻记忆（标记段替换）
+   └── ~/.hermes/memories/MEMORY.md                     Hermes 常驻记忆（HERMES_MEM_FILE）
 ```
+
+## 适用环境
+
+| 项 | 要求 |
+| --- | --- |
+| 系统 | macOS（脚本用 LaunchServices + `pkill` 启动和恢复客户端，Linux/Windows 需自行改 `bin/sync.sh`） |
+| 豆包 Work | 桌面客户端 v2.32.x（Chromium 147）实测可用；更低版本未验证，接口可能不同 |
+| Node | ≥ 18（依赖内置 `WebSocket`，不需要 `ws` 包） |
+| Python | 3.8+（只用标准库，无第三方依赖） |
+| 登录态 | 客户端已登录且能正常打开记忆面板 |
+
+接口是抓包逆出来的非公开协议，豆包每次客户端升级都有可能改。如果某一步静默返回空数据，先看 `docs/api-notes.md` 里记的协议，再用 CDP 重新抓一次比对。
 
 ## 快速开始
 
 ```bash
-git clone <repo> && cd doubao-work-migrator
+git clone https://github.com/ZhaowTao/doubao-work-migrator.git
+cd doubao-work-migrator
 ./bin/sync.sh          # 首次全量，之后每次只拉增量
 ./bin/sync.sh --full   # 忽略缓存，全量重拉
 ```
 
-运行前：豆包 Work 已安装并登录、node ≥ 18、python3。脚本会自动重启客户端并挂调试端口，结束后恢复。
+脚本会自动做的事：精确杀掉客户端 → 清 `SingletonLock` → 以 `--remote-debugging-port=9222` 重启 → 跑完七个步骤 → 恢复客户端。**你不需要手动开调试端口**，也不需要改任何文件。
 
-产物默认写到 `~/WorkBuddy/豆包Work导入/`、`~/.workbuddy/memory/`、`~/.hermes/memories/`；目标路径在 `src/convert.py` 顶部常量里改。
+### 可配置项
+
+全部走环境变量，不设就用默认值：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `DOUBAO_OUT_DIR` | `~/WorkBuddy/豆包Work导入` | Markdown 归档根目录（总览 + 分项目转录） |
+| `DOUBAO_WORK_DIR` | `~/.doubao-migrator` | 中间产物与增量缓存目录 |
+| `DOUBAO_APP` | `/Applications/DoubaoWork.app` | 客户端路径 |
+| `WORKBUDDY_MEM_FILE` | `~/.workbuddy/memory/doubao-import_memory.md` | WorkBuddy 经验记忆落点 |
+| `HERMES_MEM_FILE` | `~/.hermes/memories/MEMORY.md` | Hermes 常驻记忆落点 |
+
+例：只想拿 Markdown、不碰任何 agent 的记忆文件
+
+```bash
+DOUBAO_OUT_DIR=~/doubao-export ./bin/sync.sh
+```
+
+后两个目标工具的父目录不存在时会自动跳过并打印提示，不会给你造一堆空目录。两个变量都支持 `~` 展开，空字符串视为未设置。
 
 ## 目录结构
 
@@ -97,7 +130,16 @@ docs/
 
 ## 免责声明
 
-仅用于导出**用户本人**在已登录客户端中的数据，全部在本地处理，不上传任何服务器。用的是非公开接口，可能随客户端版本变化失效；请自行评估账号风险，不要用于批量抓取他人数据。
+- 仅用于导出**用户本人**在已登录客户端中的数据。全部在本地处理，不上传任何服务器，不联网除豆包自身接口外。
+- 用的是**非公开接口**，被抓包逆出来的，随时可能随客户端升级失效。失效不是 bug，是预期内的事。
+- 自动化操作会重启客户端、挂 CDP 调试端口。请自行评估账号风险，包括但不限于服务条款对自动化访问的限制。
+- **不要**用它批量抓取他人数据、共享账号或绕过登录。
+- 导出的 Markdown 与 JSON 里是完整对话正文，属于个人数据。开源仓库里不要提交 `export/`、`*.jsonl`、`config.json`（`.gitignore` 已挡）。
+- 作者不对使用本工具导致的账号处罚、数据丢失或任何间接损失负责。
+
+## 署名
+
+如果这个工具帮你省了事，转载或二次开发时留个仓库链接就行，不用打招呼。
 
 ## License
 
